@@ -41,3 +41,46 @@ export const addToCart = async (req: Request, res: Response) => {
     res.status(500).json({ message: "Server error", error: err?.message });
   }
 };
+
+export const getCartByUser = async (req: Request, res: Response) => {
+  const userId = req.params.userId;
+  if (!userId) {
+    return res.status(400).json({ message: "User ID is required" });
+  }
+
+  try {
+    // Populate items.item with Menu's name, image, and price
+    const cart = await Cart.findOne({ "user.id": userId })
+      .populate({
+        path: "items.item",
+        model: "Menu",
+        select: "name image price"
+      });
+
+    if (!cart) {
+      return res.status(404).json({ message: "Cart not found" });
+    }
+
+    // Format the result
+    const items = cart.items.map(cartItem => {
+      const menu = cartItem.item as any;
+      return {
+        itemId: typeof menu._id === "object" ? menu._id.toString() : menu._id,
+        name: menu.name,
+        image: menu.image,
+        price: menu.price,
+        quantity: cartItem.quantity
+      }
+    });
+
+    res.json({
+      user: cart.user,
+      items
+    });
+  } catch (err) {
+    res.status(500).json({
+      message: "Server error",
+      error: (err as Error).message
+    });
+  }
+};
