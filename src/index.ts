@@ -6,6 +6,7 @@ dotenv.config();
 import categoryRoutes from "./route/categoryRoutes.js";
 import adminRoutes from './route/adminRoutes.js';
 import menuRoutes from './route/menuRoutes.js';
+import cartRoutes from './route/cartRoutes.js';
 
 const app = express();
 app.use(cors());
@@ -15,7 +16,8 @@ app.use(express.json());
 
 app.use("/api", categoryRoutes);
 app.use("/api", adminRoutes);
-app.use("/api",menuRoutes)
+app.use("/api",menuRoutes);
+app.use("/api",cartRoutes);
 
 const PORT = process.env.PORT ;
 const URL = process.env.MONGO_URL;
