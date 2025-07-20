@@ -74,3 +74,19 @@ export const getMenuById = async (req: Request, res: Response) => {
     res.status(500).json({ message: "Failed to fetch menu", error: err });
   }
 };
+// Get menus by category ID
+export const getMenusByCategory = async (req: Request, res: Response) => {
+  try {
+    const { Id } = req.params;
+    // Optionally: check if that category exists
+    const categoryExists = await Category.findById(Id);
+    if (!categoryExists) {
+      return res.status(404).json({ message: "Category not found" });
+    }
+
+    const menus = await Menu.find({ category: Id }).populate("category").sort({ createdAt: -1 });
+    res.status(200).json({ menus });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch menus by category", error: err });
+  }
+};
