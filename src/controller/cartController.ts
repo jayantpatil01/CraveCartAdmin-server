@@ -84,3 +84,33 @@ export const getCartByUser = async (req: Request, res: Response) => {
     });
   }
 };
+export const removeCartItem = async (req: Request, res: Response) => {
+  const { userId, itemId } = req.params;
+  if (!userId || !itemId) {
+    return res.status(400).json({ message: "User ID and Item ID required" });
+  }
+
+  try {
+    // Find the cart for the user
+    const cart = await Cart.findOne({ "user.id": userId });
+    if (!cart) {
+      return res.status(404).json({ message: "Cart not found" });
+    }
+
+    // Remove the item (by filtering out the matching itemId)
+    const initialCount = cart.items.length;
+    cart.items = cart.items.filter(i => i.item.toString() !== itemId);
+
+    if (cart.items.length === initialCount) {
+      return res.status(404).json({ message: "Item not found in cart" });
+    }
+    await cart.save();
+
+    res.json({ message: "Item removed from cart", cart });
+  } catch (err: any) {
+    res.status(500).json({
+      message: "Server error",
+      error: err.message || String(err)
+    });
+  }
+};
