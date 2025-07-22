@@ -1,8 +1,9 @@
 import express from "express";
-import { addAddress } from "./controller/addressController.js"; // adjust path
+import { addAddress, getUserAddresses } from "../controller/addressController.js";
 
 const router = express.Router();
 
 router.post("/address/:userId", addAddress);
+router.get("/address/:userId", getUserAddresses);
 
 export default router;
