@@ -8,8 +8,8 @@ import crypto from "crypto";
 const { Types } = mongoose;
 
 const razorpay = new Razorpay({
-  key_id: process.env.key_id || "",
-  key_secret: process.env.key_secret || "",
+  key_id: process.env.KEY_ID || "",
+  key_secret: process.env.KEY_SECRET || "",
 });
 
 export const createOrder = async (req: Request, res: Response) => {
@@ -34,12 +34,27 @@ export const createOrder = async (req: Request, res: Response) => {
 
     const amount = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
 
-    // For online payment without transactionId, create Razorpay payment order
+    // Online payment - create Razorpay order and save order doc BEFORE payment
     if (paymentMode === "Online" && !transactionId) {
       const razorpayOrder = await razorpay.orders.create({
         amount: amount * 100, // paise
         currency: "INR",
         receipt: `order_rcpt_${Date.now()}`,
+      });
+
+      // Save the order with razorpayOrderId to verify later
+      const order = await Order.create({
+        user: { id: new Types.ObjectId(userId) },
+        address: new Types.ObjectId(addressId),
+        items: items.map((item) => ({
+          item: new Types.ObjectId(item.item),
+          quantity: item.quantity,
+          price: item.price,
+        })),
+        paymentMode,
+        status: "pending",
+        amount,
+        razorpayOrderId: razorpayOrder.id,
       });
 
       return res.status(200).json({
@@ -48,15 +63,16 @@ export const createOrder = async (req: Request, res: Response) => {
         razorpayOrderId: razorpayOrder.id,
         orderAmount: razorpayOrder.amount,
         currency: razorpayOrder.currency,
+        orderId: order._id, // return order DB id for frontend to use in verification
       });
     }
 
-    // Construct orderPayload converting string IDs to ObjectId
+    // Create order directly (COD or online payment after verification)
     const orderPayload: Partial<IOrder> = {
       user: { id: new Types.ObjectId(userId) },
       address: new Types.ObjectId(addressId),
       items: items.map((item) => ({
-        item: new Types.ObjectId(item.item), // Reference to Menu model
+        item: new Types.ObjectId(item.item),
         quantity: item.quantity,
         price: item.price,
       })),
@@ -96,7 +112,7 @@ export const verifyPayment = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: "Missing payment verification data" });
     }
 
-    const hmac = crypto.createHmac("sha256", process.env.RAZORPAY_KEY_SECRET || "");
+    const hmac = crypto.createHmac("sha256", process.env.KEY_SECRET || "");
     hmac.update(`${razorpayOrderId}|${razorpayPaymentId}`);
     const generatedSignature = hmac.digest("hex");
 
@@ -104,9 +120,10 @@ export const verifyPayment = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: "Invalid payment signature" });
     }
 
+    // Update order with transaction id and new status
     await Order.findByIdAndUpdate(orderId, {
       transactionId: razorpayPaymentId,
-      status: "pending", // or "ordered" per your business logic
+      status: "pending", // Or update to "ordered" if you want here
     });
 
     return res.json({ success: true, message: "Payment verified and order updated" });
@@ -122,7 +139,7 @@ export const getOrdersByUser = async (req: Request, res: Response) => {
     if (!userId) return res.status(400).json({ success: false, message: "UserId required" });
 
     const orders = await Order.find({ "user.id": new Types.ObjectId(userId) })
-      .populate("items.item", "name price") // populate Menu name & price
+      .populate("items.item", "name price")
       .populate("address")
       .sort({ createdAt: -1 });
 
@@ -136,7 +153,6 @@ export const getOrdersByUser = async (req: Request, res: Response) => {
 export const getAllOrders = async (req: Request, res: Response) => {
   try {
     const orders = await Order.find()
-      // No user population if no User model
       .populate("address")
       .populate("items.item", "name price")
       .sort({ createdAt: -1 });
