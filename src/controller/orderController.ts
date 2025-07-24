@@ -8,8 +8,8 @@ import crypto from "crypto";
 const { Types } = mongoose;
 
 const razorpay = new Razorpay({
-  key_id: process.env.KEY_ID || "",
-  key_secret: process.env.KEY_SECRET || "",
+  key_id: process.env.key_id || "",
+  key_secret: process.env.key_secret || "",
 });
 
 export const createOrder = async (req: Request, res: Response) => {
