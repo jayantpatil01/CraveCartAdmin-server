@@ -1,17 +1,16 @@
 import { Request, Response } from "express";
 import Razorpay from "razorpay";
 import Order, { IOrder } from "../model/Order.js";
-import {Cart} from "../model/Cart.js";
+import { Cart } from "../model/Cart.js";
 import mongoose from "mongoose";
-const { Types } = mongoose;
 import crypto from "crypto";
 
+const { Types } = mongoose;
 
 const razorpay = new Razorpay({
-  key_id: process.env.key_id,
-  key_secret: process.env.key_secret,
+  key_id: process.env.KEY_ID || "",
+  key_secret: process.env.KEY_SECRET || "",
 });
-
 
 export const createOrder = async (req: Request, res: Response) => {
   try {
@@ -35,9 +34,10 @@ export const createOrder = async (req: Request, res: Response) => {
 
     const amount = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
 
+    // For online payment without transactionId, create Razorpay payment order
     if (paymentMode === "Online" && !transactionId) {
       const razorpayOrder = await razorpay.orders.create({
-        amount: amount * 100,
+        amount: amount * 100, // paise
         currency: "INR",
         receipt: `order_rcpt_${Date.now()}`,
       });
@@ -51,31 +51,27 @@ export const createOrder = async (req: Request, res: Response) => {
       });
     }
 
-    // Convert string IDs to ObjectId before saving
-const orderPayload: Partial<IOrder> = {
-  user: { id: new Types.ObjectId(userId) },
-  address: new Types.ObjectId(addressId),
-  items: items.map(item => ({
-    item: new Types.ObjectId(item.item),
-    quantity: item.quantity,
-    price: item.price,
-  })),
-  paymentMode,
-  transactionId: transactionId || undefined,  
-  status: "pending",
-  amount,
-};
-
+    // Construct orderPayload converting string IDs to ObjectId
+    const orderPayload: Partial<IOrder> = {
+      user: { id: new Types.ObjectId(userId) },
+      address: new Types.ObjectId(addressId),
+      items: items.map((item) => ({
+        item: new Types.ObjectId(item.item), // Reference to Menu model
+        quantity: item.quantity,
+        price: item.price,
+      })),
+      paymentMode,
+      transactionId: transactionId || undefined,
+      status: "pending",
+      amount,
+    };
 
     const order = await Order.create(orderPayload);
 
-    await Cart.findOneAndUpdate(
-      { "user.id": new Types.ObjectId(userId) },
-      { items: [] }
-    );
+    // Clear user cart
+    await Cart.findOneAndUpdate({ "user.id": new Types.ObjectId(userId) }, { items: [] });
 
     return res.status(201).json({ success: true, order });
-
   } catch (error: any) {
     console.error("createOrder error:", error);
     return res.status(500).json({ success: false, message: "Server error", error: error.message });
@@ -110,7 +106,7 @@ export const verifyPayment = async (req: Request, res: Response) => {
 
     await Order.findByIdAndUpdate(orderId, {
       transactionId: razorpayPaymentId,
-      status: "pending", // or "ordered"
+      status: "pending", // or "ordered" per your business logic
     });
 
     return res.json({ success: true, message: "Payment verified and order updated" });
@@ -120,14 +116,13 @@ export const verifyPayment = async (req: Request, res: Response) => {
   }
 };
 
-
 export const getOrdersByUser = async (req: Request, res: Response) => {
   try {
     const userId = req.params.userId;
     if (!userId) return res.status(400).json({ success: false, message: "UserId required" });
 
-    const orders = await Order.find({ "user.id": userId })
-      .populate("items.item", "name price") // populate menu item info
+    const orders = await Order.find({ "user.id": new Types.ObjectId(userId) })
+      .populate("items.item", "name price") // populate Menu name & price
       .populate("address")
       .sort({ createdAt: -1 });
 
@@ -137,14 +132,14 @@ export const getOrdersByUser = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 };
+
 export const getAllOrders = async (req: Request, res: Response) => {
   try {
-    // Fetch all orders, populate related data for better readability
     const orders = await Order.find()
-      .populate("user.id", "name email")   // populate user with select fields
-      .populate("address")                 // populate address details
-      .populate("items.item", "name price") // populate item details
-      .sort({ createdAt: -1 });            // newest first
+      // No user population if no User model
+      .populate("address")
+      .populate("items.item", "name price")
+      .sort({ createdAt: -1 });
 
     return res.status(200).json({ success: true, orders });
   } catch (error: any) {
