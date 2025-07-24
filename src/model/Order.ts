@@ -9,12 +9,12 @@ export interface IOrderItem {
 export interface IOrder extends Document {
   user: {
     id: Types.ObjectId;
-    name?: string;  // optional, you can add if needed
+    name?: string; // optional
   };
   address: Types.ObjectId; // Reference to an Address document
   items: IOrderItem[];
   paymentMode: "COD" | "Online";
-  transactionId?: string; // Razorpay payment ID if Online
+  transactionId?: string; // Optional for all orders
   status:
     | "pending"
     | "preparing"
@@ -39,7 +39,7 @@ const orderSchema = new Schema<IOrder>(
   {
     user: {
       id: { type: Schema.Types.ObjectId, ref: "User", required: true },
-      name: { type: String }, 
+      name: { type: String },
     },
     address: {
       type: Schema.Types.ObjectId,
@@ -57,10 +57,7 @@ const orderSchema = new Schema<IOrder>(
       required: true,
     },
     transactionId: {
-      type: String,
-      required: function () {
-        return this.paymentMode === "Online";
-      },
+      type: String, // No required validator
     },
     status: {
       type: String,

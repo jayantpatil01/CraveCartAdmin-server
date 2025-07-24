@@ -13,7 +13,9 @@ const razorpay = new Razorpay({
 });
 
 // Log Razorpay initialization status
-console.log("Razorpay initialized:", !!razorpay);
+console.log("Backend: Razorpay initialized:", !!razorpay);
+console.log("Backend: Razorpay key_id:", !!process.env.key_id);
+console.log("Backend: Razorpay key_secret:", !!process.env.key_secret);
 
 export const createOrder = async (req: Request, res: Response) => {
   try {
@@ -31,28 +33,52 @@ export const createOrder = async (req: Request, res: Response) => {
       transactionId?: string;
     } = req.body;
 
+    console.log("Backend: Received order payload:", req.body);
+
     // Validate required fields
-    if (!userId || !addressId || !items || items.length === 0 || !paymentMode) {
-      return res.status(400).json({ success: false, message: "Missing required fields" });
+    if (!userId || !addressId || !items || !Array.isArray(items) || items.length === 0 || !paymentMode) {
+      return res.status(400).json({ success: false, message: "Missing required fields: userId, addressId, items, or paymentMode" });
     }
 
-    // Validate item data
-    if (items.some((item) => !item.item || !item.quantity || !item.price)) {
-      return res.status(400).json({ success: false, message: "Invalid item data" });
+    // Validate ObjectIds
+    if (!Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ success: false, message: `Invalid userId: ${userId}` });
+    }
+    if (!Types.ObjectId.isValid(addressId)) {
+      return res.status(400).json({ success: false, message: `Invalid addressId: ${addressId}` });
+    }
+    for (const item of items) {
+      if (!Types.ObjectId.isValid(item.item)) {
+        return res.status(400).json({ success: false, message: `Invalid item ID: ${item.item}` });
+      }
+      if (typeof item.quantity !== "number" || item.quantity <= 0) {
+        return res.status(400).json({ success: false, message: `Invalid quantity for item ${item.item}: ${item.quantity}` });
+      }
+      if (typeof item.price !== "number" || item.price <= 0) {
+        return res.status(400).json({ success: false, message: `Invalid price for item ${item.item}: ${item.price}` });
+      }
     }
 
+    // Calculate amount
     const amount = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+    if (amount <= 0) {
+      return res.status(400).json({ success: false, message: "Order amount must be greater than zero" });
+    }
 
-    // Online payment - create Razorpay order and save order doc BEFORE payment
+    // Online payment - create Razorpay order
     if (paymentMode === "Online" && !transactionId) {
       try {
+        if (!process.env.key_id || !process.env.key_secret) {
+          return res.status(500).json({ success: false, message: "Razorpay credentials are missing" });
+        }
+
         const razorpayOrder = await razorpay.orders.create({
-          amount: amount * 100, // Convert to paise
+          amount: Math.round(amount * 100), // Convert to paise, ensure integer
           currency: "INR",
           receipt: `order_rcpt_${Date.now()}`,
         });
 
-        console.log("Razorpay Order:", razorpayOrder);
+        console.log("Backend: Razorpay order created:", razorpayOrder);
 
         if (!razorpayOrder.id) {
           return res.status(500).json({ success: false, message: "Failed to create Razorpay order" });
@@ -70,7 +96,10 @@ export const createOrder = async (req: Request, res: Response) => {
           status: "pending",
           amount,
           razorpayOrderId: razorpayOrder.id,
+          transactionId: null, // Explicitly set to null for online orders
         });
+
+        console.log("Backend: MongoDB order created:", order);
 
         return res.status(200).json({
           success: true,
@@ -81,16 +110,16 @@ export const createOrder = async (req: Request, res: Response) => {
           orderId: order._id,
         });
       } catch (razorpayError: any) {
-        console.error("Razorpay order creation error:", razorpayError);
+        console.error("Backend: Razorpay order creation error:", razorpayError);
         return res.status(500).json({
           success: false,
           message: "Failed to create Razorpay order",
-          error: razorpayError.message,
+          error: razorpayError.message || "Unknown Razorpay error",
         });
       }
     }
 
-    // Create order directly (COD or online payment after verification)
+    // COD or post-verification online order
     const orderPayload: Partial<IOrder> = {
       user: { id: new Types.ObjectId(userId) },
       address: new Types.ObjectId(addressId),
@@ -106,14 +135,19 @@ export const createOrder = async (req: Request, res: Response) => {
     };
 
     const order = await Order.create(orderPayload);
+    console.log("Backend: COD order created:", order);
 
     // Clear user cart
     await Cart.findOneAndUpdate({ "user.id": new Types.ObjectId(userId) }, { items: [] });
 
     return res.status(201).json({ success: true, order });
   } catch (error: any) {
-    console.error("createOrder error:", error);
-    return res.status(500).json({ success: false, message: "Server error", error: error.message });
+    console.error("Backend: createOrder error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error in createOrder",
+      error: error.message || "Unknown server error",
+    });
   }
 };
 
@@ -131,16 +165,26 @@ export const verifyPayment = async (req: Request, res: Response) => {
       orderId: string;
     } = req.body;
 
+    console.log("Backend: Verify payment payload:", req.body);
+
     if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature || !orderId) {
       return res.status(400).json({ success: false, message: "Missing payment verification data" });
     }
 
-    const hmac = crypto.createHmac("sha256", process.env.key_secret || "");
+    if (!process.env.key_secret) {
+      return res.status(500).json({ success: false, message: "Razorpay secret is missing" });
+    }
+
+    const hmac = crypto.createHmac("sha256", process.env.key_secret);
     hmac.update(`${razorpayOrderId}|${razorpayPaymentId}`);
     const generatedSignature = hmac.digest("hex");
 
     if (generatedSignature !== razorpaySignature) {
       return res.status(400).json({ success: false, message: "Invalid payment signature" });
+    }
+
+    if (!Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({ success: false, message: `Invalid orderId: ${orderId}` });
     }
 
     const order = await Order.findById(orderId);
@@ -150,30 +194,44 @@ export const verifyPayment = async (req: Request, res: Response) => {
 
     await Order.findByIdAndUpdate(orderId, {
       transactionId: razorpayPaymentId,
-      status: "ordered", // Reflect successful payment
+      status: "ordered",
     });
+
+    console.log("Backend: Payment verified, order updated:", orderId);
 
     return res.json({ success: true, message: "Payment verified and order updated" });
   } catch (error: any) {
-    console.error("verifyPayment error:", error);
-    return res.status(500).json({ success: false, message: "Server error", error: error.message });
+    console.error("Backend: verifyPayment error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error in verifyPayment",
+      error: error.message || "Unknown server error",
+    });
   }
 };
 
 export const getOrdersByUser = async (req: Request, res: Response) => {
   try {
     const userId = req.params.userId;
-    if (!userId) return res.status(400).json({ success: false, message: "UserId required" });
+    if (!userId || !Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ success: false, message: `Invalid userId: ${userId}` });
+    }
 
     const orders = await Order.find({ "user.id": new Types.ObjectId(userId) })
       .populate("items.item", "name price")
       .populate("address")
       .sort({ createdAt: -1 });
 
+    console.log("Backend: Orders fetched for user:", userId, orders.length);
+
     return res.json({ success: true, orders });
   } catch (error: any) {
-    console.error("getOrdersByUser error:", error);
-    return res.status(500).json({ success: false, message: "Server error", error: error.message });
+    console.error("Backend: getOrdersByUser error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error in getOrdersByUser",
+      error: error.message || "Unknown server error",
+    });
   }
 };
 
@@ -184,13 +242,15 @@ export const getAllOrders = async (req: Request, res: Response) => {
       .populate("items.item", "name price")
       .sort({ createdAt: -1 });
 
+    console.log("Backend: All orders fetched:", orders.length);
+
     return res.status(200).json({ success: true, orders });
   } catch (error: any) {
-    console.error("getAllOrders error:", error);
+    console.error("Backend: getAllOrders error:", error);
     return res.status(500).json({
       success: false,
-      message: "Failed to fetch all orders",
-      error: error.message,
+      message: "Server error in getAllOrders",
+      error: error.message || "Unknown server error",
     });
   }
 };
