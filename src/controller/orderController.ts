@@ -12,6 +12,9 @@ const razorpay = new Razorpay({
   key_secret: process.env.key_secret || "",
 });
 
+// Log Razorpay initialization status
+console.log("Razorpay initialized:", !!razorpay);
+
 export const createOrder = async (req: Request, res: Response) => {
   try {
     const {
@@ -28,43 +31,63 @@ export const createOrder = async (req: Request, res: Response) => {
       transactionId?: string;
     } = req.body;
 
+    // Validate required fields
     if (!userId || !addressId || !items || items.length === 0 || !paymentMode) {
       return res.status(400).json({ success: false, message: "Missing required fields" });
+    }
+
+    // Validate item data
+    if (items.some((item) => !item.item || !item.quantity || !item.price)) {
+      return res.status(400).json({ success: false, message: "Invalid item data" });
     }
 
     const amount = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
 
     // Online payment - create Razorpay order and save order doc BEFORE payment
     if (paymentMode === "Online" && !transactionId) {
-      const razorpayOrder = await razorpay.orders.create({
-        amount: amount * 100, // paise
-        currency: "INR",
-        receipt: `order_rcpt_${Date.now()}`,
-      });
+      try {
+        const razorpayOrder = await razorpay.orders.create({
+          amount: amount * 100, // Convert to paise
+          currency: "INR",
+          receipt: `order_rcpt_${Date.now()}`,
+        });
 
-      // Save the order with razorpayOrderId to verify later
-      const order = await Order.create({
-        user: { id: new Types.ObjectId(userId) },
-        address: new Types.ObjectId(addressId),
-        items: items.map((item) => ({
-          item: new Types.ObjectId(item.item),
-          quantity: item.quantity,
-          price: item.price,
-        })),
-        paymentMode,
-        status: "pending",
-        amount,
-        razorpayOrderId: razorpayOrder.id,
-      });
+        console.log("Razorpay Order:", razorpayOrder);
 
-      return res.status(200).json({
-        success: true,
-        payment: "online",
-        razorpayOrderId: razorpayOrder.id,
-        orderAmount: razorpayOrder.amount,
-        currency: razorpayOrder.currency,
-        orderId: order._id, // return order DB id for frontend to use in verification
-      });
+        if (!razorpayOrder.id) {
+          return res.status(500).json({ success: false, message: "Failed to create Razorpay order" });
+        }
+
+        const order = await Order.create({
+          user: { id: new Types.ObjectId(userId) },
+          address: new Types.ObjectId(addressId),
+          items: items.map((item) => ({
+            item: new Types.ObjectId(item.item),
+            quantity: item.quantity,
+            price: item.price,
+          })),
+          paymentMode,
+          status: "pending",
+          amount,
+          razorpayOrderId: razorpayOrder.id,
+        });
+
+        return res.status(200).json({
+          success: true,
+          payment: "online",
+          razorpayOrderId: razorpayOrder.id,
+          orderAmount: razorpayOrder.amount,
+          currency: razorpayOrder.currency,
+          orderId: order._id,
+        });
+      } catch (razorpayError: any) {
+        console.error("Razorpay order creation error:", razorpayError);
+        return res.status(500).json({
+          success: false,
+          message: "Failed to create Razorpay order",
+          error: razorpayError.message,
+        });
+      }
     }
 
     // Create order directly (COD or online payment after verification)
@@ -112,7 +135,7 @@ export const verifyPayment = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: "Missing payment verification data" });
     }
 
-    const hmac = crypto.createHmac("sha256", process.env.KEY_SECRET || "");
+    const hmac = crypto.createHmac("sha256", process.env.key_secret || "");
     hmac.update(`${razorpayOrderId}|${razorpayPaymentId}`);
     const generatedSignature = hmac.digest("hex");
 
@@ -120,10 +143,14 @@ export const verifyPayment = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: "Invalid payment signature" });
     }
 
-    // Update order with transaction id and new status
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Order not found" });
+    }
+
     await Order.findByIdAndUpdate(orderId, {
       transactionId: razorpayPaymentId,
-      status: "pending", // Or update to "ordered" if you want here
+      status: "ordered", // Reflect successful payment
     });
 
     return res.json({ success: true, message: "Payment verified and order updated" });
